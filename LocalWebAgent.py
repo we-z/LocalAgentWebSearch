@@ -1,20 +1,30 @@
 from openai import OpenAI
-import time
+from ddgs import DDGS
+import json
 
 client = OpenAI(base_url="http://localhost:1234/v1", api_key="lm-studio")
 MODEL = "openai/gpt-oss-20b"
 
-TIME_TOOL = {
+SEARCH_TOOL = {
     "type": "function",
     "function": {
-        "name": "get_current_time",
-        "description": "Get the current time, only if asked",
-        "parameters": {"type": "object", "properties": {}},
+        "name": "search_web",
+        "description": "Search the internet for up-to-date information.",
+        "parameters": {
+            "type": "object", 
+            "properties": {
+                "query": {"type": "string", "description": "The search query"}
+            },
+            "required": ["query"]
+        },
     },
 }
 
-def get_current_time():
-    return {"time": time.strftime("%H:%M:%S")}
+def search_web(query):
+    results = DDGS().text(query, max_results=5)
+    if results:
+        return json.dumps(results, indent=2)
+    return "No results found."
 
 def process_stream(stream, add_assistant_label=True):
     """Handle streaming responses from the API"""
@@ -55,7 +65,7 @@ def process_stream(stream, add_assistant_label=True):
 
 def chat_loop():
     messages = []
-    print("Assistant: Hi! I am an AI agent empowered with the ability to tell the current time (Type 'quit' to exit)")
+    print("Assistant: Hi! I am an AI agent empowered with the ability to search the web (Type 'quit' to exit)")
 
     while True:
         user_input = input("\nYou: ").strip()
@@ -69,7 +79,7 @@ def chat_loop():
             client.chat.completions.create(
                 model=MODEL,
                 messages=messages,
-                tools=[TIME_TOOL],
+                tools=[SEARCH_TOOL],
                 stream=True,
                 temperature=0.2
             )
@@ -93,8 +103,10 @@ def chat_loop():
 
             # Execute tool calls
             for tool_call in tool_calls:
-                if tool_call["function"]["name"] == "get_current_time":
-                    result = get_current_time()
+                if tool_call["function"]["name"] == "search_web":
+                    arguments = json.loads(tool_call["function"]["arguments"])
+                    query = arguments.get("query")
+                    result = search_web(query)
                     messages.append({
                         "role": "tool",
                         "content": str(result),
