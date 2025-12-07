@@ -2,7 +2,7 @@ from openai import OpenAI
 import time
 
 client = OpenAI(base_url="http://localhost:1234/v1", api_key="lm-studio")
-MODEL = "lmstudio-community/qwen2.5-7b-instruct"
+MODEL = "openai/gpt-oss-20b"
 
 TIME_TOOL = {
     "type": "function",
