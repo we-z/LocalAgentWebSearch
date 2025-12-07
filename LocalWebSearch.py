@@ -1,111 +1,75 @@
-import json
 import requests
+import json
 from openai import OpenAI
 
-# Point to the local server
 client = OpenAI(base_url="http://localhost:1234/v1", api_key="lm-studio")
 model = "openai/gpt-oss-20b"
 
-
-def web_search_duckduckgo(query: str, max_results: int = 5) -> dict:
-    """
-    Perform a DuckDuckGo search and return the top results.
-    
-    Args:
-        query (str): The search query.
-        max_results (int): Maximum number of results to return.
-
-    Returns:
-        dict: Search results including titles and URLs.
-    """
+# Tool: fetch DuckDuckGo HTML page
+def fetch_webpage(url: str, max_chars=5000) -> str:
     try:
-        search_url = "https://duckduckgo.com/html/"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                          "AppleWebKit/537.36 (KHTML, like Gecko) "
-                          "Chrome/116.0.0.0 Safari/537.36"
-        }
-        params = {"q": query}
-
-        response = requests.post(search_url, headers=headers, data=params, timeout=10)
-        response.raise_for_status()
-
-        # Parse links from HTML using simple string operations
-        results = []
-        html = response.text.split('<a rel="nofollow" class="result__a" href="')
-        for entry in html[1:max_results+1]:
-            url_part = entry.split('"')[0]
-            title_part = entry.split('">')[1].split('</a>')[0]
-            results.append({"title": title_part, "url": url_part})
-
-        return {"status": "success", "query": query, "results": results}
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        return resp.text[:max_chars]
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        return f"Error fetching webpage: {str(e)}"
 
-
+# Tools definition for the model
 tools = [
     {
         "type": "function",
         "function": {
-            "name": "web_search_duckduckgo",
-            "description": "Search the web using DuckDuckGo and return the top results.",
+            "name": "fetch_webpage",
+            "description": "Fetches the raw HTML content of a web page",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "The search query to look up.",
-                    },
-                    "max_results": {
-                        "type": "integer",
-                        "description": "Maximum number of search results to return (default 5).",
-                    },
+                    "url": {"type": "string", "description": "The URL to fetch"}
                 },
-                "required": ["query"],
+                "required": ["url"],
             },
         },
     }
 ]
 
-
 def process_tool_calls(response, messages):
-    """Process a tool call from the assistant and return the final response"""
-    tool_calls = response.choices[0].message.tool_calls
-    messages.append({
-        "role": "assistant",
-        "tool_calls": [{"id": tc.id, "type": tc.type, "function": tc.function} for tc in tool_calls]
-    })
+    """Process all tool calls and send results back to the model"""
+    tool_calls = response.choices[0].message.get("tool_calls", [])
+    if not tool_calls:
+        return response.choices[0].message.get("content", "")
 
     for tool_call in tool_calls:
-        args = json.loads(tool_call.function.arguments) if tool_call.function.arguments.strip() else {}
-        if tool_call.function.name == "web_search_duckduckgo":
-            result = web_search_duckduckgo(**args)
-        else:
-            result = {"status": "error", "message": f"Unknown tool {tool_call.function.name}"}
+        func_name = tool_call["function"]["name"]
+        args = json.loads(tool_call["function"]["arguments"])
 
-        tool_result_message = {
-            "role": "tool",
-            "content": json.dumps(result),
-            "tool_call_id": tool_call.id,
-        }
-        messages.append(tool_result_message)
+        if func_name == "fetch_webpage":
+            url = args.get("url")
+            result = fetch_webpage(url)
+            messages.append({
+                "role": "assistant",
+                "tool_calls": [tool_call]
+            })
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call["id"],
+                "content": result
+            })
 
+    # Ask the model again after adding tool results
     final_response = client.chat.completions.create(
         model=model,
-        messages=messages,
+        messages=messages
     )
-    return final_response
-
+    return final_response.choices[0].message.content
 
 def chat():
     messages = [
         {
             "role": "system",
-            "content": "You are a helpful assistant that can perform web searches using DuckDuckGo for up-to-date information."
+            "content": "You are a helpful assistant. Use tools when needed to fetch web content or assist the user."
         }
     ]
-
-    print("Assistant: Hello! I can help you search the web using DuckDuckGo for up-to-date info.")
+    print("Assistant: Hello! I can fetch webpages and summarize them. Just ask anything.")
     print("(Type 'quit' to exit)")
 
     while True:
@@ -116,25 +80,17 @@ def chat():
 
         messages.append({"role": "user", "content": user_input})
 
-        try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                tools=tools,
-            )
+        # Get model response
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            tools=tools
+        )
 
-            if response.choices[0].message.tool_calls:
-                final_response = process_tool_calls(response, messages)
-                print("\nAssistant:", final_response.choices[0].message.content)
-                messages.append({"role": "assistant", "content": final_response.choices[0].message.content})
-            else:
-                print("\nAssistant:", response.choices[0].message.content)
-                messages.append({"role": "assistant", "content": response.choices[0].message.content})
-
-        except Exception as e:
-            print(f"\nAn error occurred: {str(e)}")
-            break
-
+        # Process tool calls if any
+        answer = process_tool_calls(response, messages)
+        print("\nAssistant:", answer)
+        messages.append({"role": "assistant", "content": answer})
 
 if __name__ == "__main__":
     chat()
